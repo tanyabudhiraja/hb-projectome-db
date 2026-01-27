@@ -1,0 +1,16 @@
+*.h5ad
+*.h5seurat
+*.h5Seurat
+*.rds
+*.RDataTmp
+*.loom
+*.gz
+GSE137478_RAW/
+lar1/
+lar_ss2/
+hbr1/
+hbr2/
+out/
+ref/
+tpms/
+.DS_Store

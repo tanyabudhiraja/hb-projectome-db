@@ -1,0 +1,1696 @@
+---
+title: "hb_scseq_reanalyze_adult_hb"
+author: "Ji Cheng"
+output:
+  html_document: default
+  pdf_document: default
+---
+
+```{r}
+library(Seurat)
+library(dplyr)
+library(xgboost)
+library(Matrix)
+```
+
+
+```{r}
+options(Seurat.object.assay.version = "v3")
+# Load the hb dataset
+hb_lar1.data <- Read10X(data.dir = "./lar1/")
+hb_lar1 <- CreateSeuratObject(hb_lar1.data,assay = "RNA", min.cells = 3, project = "fish_lar1")
+```
+
+---
+title: "hb_scseq_reanalyze_larval_hb"
+output: html_document
+author: Ji Cheng
+---
+
+
+
+
+```{r}
+# Examine the memory savings between regular and sparse matrices
+# dense.size <- object.size(x = as.matrix(x = hb.data))
+# dense.size
+# 
+# sparse.size <- object.size(x =hb.data)
+# sparse.size
+# 
+# dense.size/sparse.size
+```
+
+```{r}
+#hb <-subset(hb, subset = GNG8 > 0)
+```
+
+
+```{r}
+# The number of genes and UMIs (nGene and nUMI) are automatically calculated
+# for every object by Seurat.  For non-UMI data, nUMI represents the sum of
+# the non-normalized values within a cell We calculate the percentage of
+# mitochondrial genes here and store it in percent.mito using AddMetaData.
+# We use object@raw.data since this represents non-transformed and
+# non-log-normalized counts The % of UMI mapping to MT-genes is a common
+# scRNA-seq QC metric.
+mito.genes_lar1 <- grep(pattern = "^MT-", x = rownames(x = hb_lar1$RNA@data), value = TRUE)
+percent.mito_lar1 <- Matrix::colSums(hb_lar1@assays$RNA@data[mito.genes_lar1, ])/Matrix::colSums(hb_lar1@assays$RNA@data)
+
+# AddMetaData adds columns to object@meta.data, and is a great place to
+# stash QC stats
+hb_lar1 <- AddMetaData(object = hb_lar1, metadata = percent.mito_lar1, col.name = "percent.mito")
+
+VlnPlot(object = hb_lar1,  features = c("nFeature_RNA", "nCount_RNA", "percent.mito"), ncol = 3)
+```
+
+
+
+```{r}
+
+par(mfrow = c(1, 2))
+#GenePlot(object = hb, gene1 = "nUMI", gene2 = "percent.mito")
+#GenePlot(object = hb, gene1 = "nUMI", gene2 = "nGene")
+
+
+```
+
+
+```{r}
+#hb<- subset( hb, subset = percent.mito < 0.1 & percent.mito > 0.05)
+
+
+```
+
+
+```{r}
+VlnPlot(object = hb_lar1, features = c("nFeature_RNA", "nCount_RNA", "percent.mito"), ncol = 3)
+```
+
+
+```{r}
+hb_lar1 <- NormalizeData(object = hb_lar1, normalization.method = "LogNormalize", 
+    scale.factor = 10000)
+```
+
+
+```{r}
+hb_lar1 <- FindVariableFeatures(object = hb_lar1, mean.function = ExpMean, dispersion.function = LogVMR, 
+    x.low.cutoff = 0.0125, y.cutoff = 0.5)
+```
+
+```{r}
+hb_lar1 <- ScaleData(object = hb_lar1, vars.to.regress = c("nCount_RNA", "percent.mito"),use.umi = FALSE,
+  do.scale = TRUE,
+  do.center = TRUE)
+
+
+```
+
+
+```{r}
+##PCA analysis will give you intermingled components
+hb_lar1 <- RunPCA(object = hb_lar1, pc.genes = hb_lar1$RNA@var.genes, pcs.compute = 30, genes.print = 5,seed.use = 1)
+```
+
+```{r}
+seed.use =111
+hb_lar1 <- FindNeighbors(hb_lar1, reduction = "pca", dims = 1:30)
+
+```
+```{r}
+#May need to alter the resolution to get 15 clusters for adatping the downstream analysis - the original data containt the vHb cells  - KISS1 expression
+seed.use =111
+hb_lar1 <- FindClusters(hb_lar1, resolution = 0.45, n.start = 13)
+```
+
+
+
+
+```{r}
+hb_lar1 <- RunUMAP(object = hb_lar1, reduction = "pca" ,dims= 1:30,umap.method = "uwot", min.dist = 0.75,seed.use = 111)
+#a = 0.2734 b = 1.622
+```
+
+```{r}
+UMAPPlot(hb_lar1)
+```
+
+
+```{r}
+#hb_lar1 <- subset(hb_lar1, idents = c(0,1,2,3,4,5,6,7,8,9,10,11,12,13))
+
+#Sometimes the umap axis may reverse
+#hb_lar1@reductions$umap@cell.embeddings[,1] <- hb_lar1@reductions$umap@cell.embeddings[,1]*-1
+#hb_lar1@reductions$umap@cell.embeddings[,2] <- hb_lar1@reductions$umap@cell.embeddings[,2]*-1
+#embeddings_mat<-hb@reductions$umap@cell.embeddings
+#save(embeddings_mat,file= "./out/zfish/zfish_lar_embed.Rdata")
+
+#load a previous UMAP embedding for reproducibility
+load("./out/zfish/zfish_lar_embed.Rdata")
+
+
+
+hb_lar1@reductions$umap@cell.embeddings[,1] <- embeddings_mat[,1]
+hb_lar1@reductions$umap@cell.embeddings[,2] <- embeddings_mat[,2]
+#remove cluster with kisspeptin expression
+hb_lar1 <- subset(hb_lar1, idents = c(0:13))
+UMAPPlot(hb_lar1)
+```
+
+
+
+
+
+
+```{r}
+# K-nearest neighbor smoothing for high-throughput single-cell RNA-Seq data
+# (R implementation.)
+
+# Authors:
+#   Yun Yan <yun.yan@nyumc.org>
+#   Florian Wagner <florian.wagner@nyu.edu>
+# Copyright (c) 2017, 2018 New York University
+
+suppressPackageStartupMessages(library(Matrix))
+suppressPackageStartupMessages(library(rsvd))
+
+randomized_pca <- function(tmat, d, seed){
+  # @param tmat A non-negative matrix with samples by features
+  # @return A matrix with features by samples projected on PCA space
+  set.seed(seed)
+  #rsvd_obj <- rsvd(scale(tmat, center = TRUE, scale = FALSE), k=d)
+  #rsvd_obj$u %*% diag(rsvd_obj$d)
+  rpca_obj <- rpca(tmat, k=d, center=T, scale=F, retx=T, p=10, q=7)
+  rpca_obj$x
+}
+
+normalization_median <- function(mat){
+  # Median normalization
+  # @param mat A non-negative matrix with genes by samples
+  num_transcripts <- Matrix::colSums(mat)
+  size_factor <- median(num_transcripts, na.rm = T) / num_transcripts
+  t(t(mat) * size_factor)
+}
+
+freeman_tukey_transform <- function(mat){
+  sqrt(mat) + sqrt(mat + 1)
+}
+
+pdist <- function(tmat){
+  # @param tmat A non-negative matrix with samples by features
+  # @reference http://r.789695.n4.nabble.com/dist-function-in-R-is-very-slow-td4738317.html
+  mtm <- Matrix::tcrossprod(tmat)
+  sq <- rowSums(tmat^2)
+  out0 <- outer(sq, sq, "+") - 2 * mtm
+  out0[out0 < 0] <- 0
+
+  sqrt(out0)
+}
+
+smoother_aggregate_nearest_nb <- function(mat, D, k){
+  # @param mat A matrix in a shape of #genes x #samples.
+  # @param D A predefined distance matrix in a shape of #samples x #samples.
+  # @param k An integer to choose \code{k} nearest samples (self-inclusive) to
+  #  aggregate based on the distance matrix \code{D}. If \code{k} is greater than
+  #  #samples, \code{k} is forced to be #samples to continue aggregation.
+  sapply(seq_len(ncol(mat)), function(cid){
+    nb_cid <- head(order(D[cid, ]), k)
+    closest_mat <- mat[, nb_cid, drop=FALSE]
+    return(Matrix::rowSums(closest_mat))
+  })
+}
+
+knn_smoothing <- function(mat, k, d=10, seed=42){
+  #' KNN-smoothing on UMI-filtered single-cell RNA-seq data
+  #'
+  #' @param mat A numeric matrix with gene names on rows and cell names on columns.
+  #' @param k Number of nearest neighbours to aggregate.
+  #' @param d Number of Principal components.
+  #' @param seed Seed number. (default=42)
+  #' @return A smoothed numeric matrix.
+  #' @examples
+  #' X <- matrix(abs(sin(seq(from=1, to=1000, length.out = 1000))),
+  #' nrow = 25, byrow = T)
+  #' y <- rep(1:4, each=10)
+  #' dim(X)
+  #' colnames(X) <- as.character(paste0("s", seq_len(ncol(X))))
+  #' rownames(X) <- as.character(paste0("g", seq_len(nrow(X))))
+  #' S <- knn_smoother(X, k=5)
+  #' plot(X[1, ], X[3, ], col=factor(y), main="original")
+  #' plot(S[1, ], S[3, ], col=factor(y), main="smoothed")
+  #' @export
+
+  cname <- colnames(mat)
+  gname <- rownames(mat)
+
+  num_steps <- ceiling(log2(k + 1))
+  S <- mat
+  for (p in seq(1, num_steps)){
+    k_step <- min(2^p - 1, k)
+    message(paste0('Step ', p, '/', num_steps, ': ',
+                   'Smoothing using k=', k_step))
+    Y <- freeman_tukey_transform(normalization_median(S))
+    if (! is.null(d)) {
+      Y <- t(randomized_pca(t(Y), d=d, seed=seed))
+    }
+    D <- pdist(t(Y))
+    S <- smoother_aggregate_nearest_nb(mat, D, k_step + 1)
+  }
+  if (! is.null(cname)) colnames(S) <- cname
+  if (! is.null(gname)) rownames(S) <- gname
+
+  S
+}
+```
+
+```{r}
+#nearest neighbor smoothening
+set.seed(111)
+hb_lar1@assays$RNA@data <- knn_smoothing(hb_lar1@assays$RNA@data,20)
+```
+```{r}
+###Define clusters
+hb_lar1_renamed <- hb_lar1
+```
+
+```{r}
+gene_list <- rownames(hb_lar1_renamed@assays$RNA@data)
+```
+
+
+
+
+```{r}
+#Idents(hb_lar1_renamed, cells=colnames(subset(hb_lar1_renamed, subset = PNOCA > 10 & SLC5A7A > 10))) <- "Cluster 5"
+#Idents(hb_lar1_renamed, cells=colnames(subset(hb_lar1_renamed, subset = NPPC > 3))) <- "Cluster 13"
+```
+
+```{r}
+UMAPPlot(hb_lar1)
+```
+
+```{r}
+hb_lar1_renamed <- RenameIdents(hb_lar1, '0' = 'Cluster 4','1' = 'Cluster 8', '2' = 'Cluster 3', '3' = 'Cluster 10','4' = 'Cluster 9','5' = 'Cluster 6','6' = 'Cluster 11', '7' = 'Cluster 2','8' = 'Cluster 5','9' = 'Cluster 7','10' = 'Cluster 1','11' = 'Cluster 12','12' = 'Cluster 13', '13' = 'Cluster 14')
+
+
+```
+
+```{r}
+levels(hb_lar1_renamed) <- c('Cluster 1','Cluster 2','Cluster 3','Cluster 4','Cluster 5','Cluster 6','Cluster 7','Cluster 8','Cluster 9','Cluster 10','Cluster 11','Cluster 12','Cluster 13','Cluster 14') 
+UMAPPlot(hb_lar1_renamed)
+```
+
+```{r}
+library(ggplot2)
+p1 <- UMAPPlot(hb_lar1_renamed)
+ggsave(
+  './dHb_clusters.png',
+  p1 ,
+  height = 6, width = 8
+)
+```
+
+
+
+
+```{r}
+library(ggplot2)
+p1 <- FeaturePlot(hb_lar1_renamed, feature = c("POU4F1"), min.cutoff = 40)
+ggsave(
+  './zfish_nptx2a_cutoff.png',
+  p1 ,
+  height = 6, width = 8
+)
+```
+
+```{r}
+library(ggplot2)
+p1 <- UMAPPlot(hb_lar1_renamed)
+ggsave(
+  './dHb_clusters.png',
+  p1 ,
+  height = 6, width = 8
+)
+```
+
+```{r}
+hb_lar1 <- ScaleData(object = hb_lar1, vars.to.regress = c("nCount_RNA", "percent.mito"),use.umi = FALSE,
+  do.scale = TRUE,
+  do.center = TRUE)
+```
+
+
+
+
+```{r}
+#all.pos.markers <- all.markers[all.markers$avg_log2FC>0, ]
+#head(all.pos.markers[all.pos.markers$cluster == 0,],50)
+```
+
+
+
+```{r}
+add_region <- function(M,region) {
+M_temp<-M@assays$RNA@data
+i=0
+for (x in region) 
+{
+out_temp_new <- rbind2(M_temp,x)
+if (i>=1)
+{out_temp<-cbind(out_temp,out_temp_new)
+}else
+{
+  out_temp<-out_temp_new
+}
+
+i=i+1
+}
+out_temp
+}
+```
+
+
+
+```{r}
+#dIPN_dHb <- subset(temp_lar1, subset = SLC5A7A>20)
+vIPN_dHb <- subset(hb_lar1, subset =  SLC5A7A > 20 | KCTD12.2>35 )
+dIPN_dHb <- subset(hb_lar1, subset =  SLC5A7A < 20 & KCTD12.2<35 )
+#vIPN_dHb <- merge(vIPN_dHb,subset(dIPN_dHb, subset = DYRK4>10))
+#dIPN_dHb <- subset(dIPN_dHb, subset = DYRK4<10)
+#vIPN_dHb <- merge(vIPN_dHb,subset(dIPN_dHb, subset = GNG2>25))
+#dIPN_dHb <- subset(dIPN_dHb, subset = GNG2<25)
+
+
+
+#Confirmed by transgenic lines
+#dIPN_dHb <- merge(dIPN_dHb,subset(vIPN_dHb, subset = TACR3L>30))
+#vIPN_dHb <- subset(vIPN_dHb, subset = TACR3L<30)
+#vIPN_dHb <- merge(vIPN_dHb,subset(dIPN_dHb, subset = SST1.1>60))
+#dIPN_dHb <- subset(dIPN_dHb, subset = SST1.1<60)
+#vIPN_dHb <- merge(vIPN_dHb,subset(dIPN_dHb, subset = FAM84B>2))
+#dIPN_dHb <- subset(dIPN_dHb, subset = FAM84B<2)
+#dIPN_dHb <- merge(dIPN_dHb,subset(vIPN_dHb, subset = TAC1>1))
+#vIPN_dHb <- subset(vIPN_dHb, subset = TAC1<1)
+#vIPN_dHb <- merge(vIPN_dHb,subset(dIPN_dHb, subset = KCTD12.2>45))
+#dIPN_dHb <- subset(dIPN_dHb, subset = KCTD12.2<45)
+
+```
+
+
+
+
+```{r}
+POU4F1_thres = 40
+NPTX2A_thres = 17.5
+KCTD_thres = 50
+
+
+
+#0
+pou4f1_neg_dHb<- subset(dIPN_dHb, subset = POU4F1 < POU4F1_thres & TAC1 < 5 & FAM84B < 1 & SST1.1 < 60 & TACR3L < 30 & GALN < 1)
+tac1_nptx2a_high <-subset(dIPN_dHb, subset = NPTX2A > NPTX2A_thres & TAC1 > 5 & GALN < 1 )
+
+
+#1
+tacr3l_dHb<-subset(hb_lar1, subset = TACR3L > 30 & GALN < 1 & FAM84B < 1 & SST1.1 <70)
+pou4f1_pos_dHb<- subset(dIPN_dHb, subset = POU4F1 > POU4F1_thres & TAC1 < 5 & FAM84B < 1 & SST1.1 < 60 & TACR3L < 30 & GALN < 1)
+tac1_nptx2a_low <-subset(dIPN_dHb, subset = NPTX2A < NPTX2A_thres  & TAC1 > 5 & GALN < 1) 
+
+
+#2
+spx_inter_dHb <- subset(hb_lar1, subset = SPX > 10  & FAM84B < 1 & KCTD12.2 < 50 & SST1.1 < 80 )
+galn_dIPN_dHb <- subset(hb_lar1, subset = GALN > 3  & FAM84B < 1 & KCTD12.2 < 50 & SST1.1 < 80)
+
+
+#3
+sst11_dHb <-subset(hb_lar1, subset = SST1.1 > 60 & TAC1 <1 & FAM84B < 1 & SPX<1 & TACR3L <30 )
+nptx2a_dHb <-subset(vIPN_dHb, subset = NPTX2A > NPTX2A_thres & TAC1 <1 & FAM84B < 1 & SPX<1 & TACR3L <30 )
+
+
+#4
+neg_fam84b_sst11_dHb <- subset(vIPN_dHb, subset = TAC3A > 25  & SST1.1 < 60 & TACR3L < 30 & FAM84B < 1 & GALN < 1)
+spx_midvent_dHb <-subset(vIPN_dHb, subset = SPX > 10 & SST1.1 < 60 & TACR3L < 30 & FAM84B < 1 &  GALN < 1 & KCTD12.2 > 45)
+pou4f1_pos_dHb <-subset(vIPN_dHb, subset = POU4F1 > POU4F1_thres & SST1.1 < 60 & TACR3L < 30 & FAM84B < 1 & GALN < 1)
+galn_vIPN_dHb <- subset(vIPN_dHb, subset = GALN > 3 & TACR3L < 30 & FAM84B < 1 )
+
+#5
+fam84b_dHb <- subset(hb_lar1, subset = FAM84B > 2 & GALN < 1 & SPX<1) 
+```
+
+
+```{r}
+colnames(tacr3l_dHb@assays$RNA@counts)
+```
+
+
+```{r}
+###overlapping train data
+
+#0
+pou4f1_neg_traindata<- add_region(pou4f1_neg_dHb,c(0))
+tac1_nptx2a_high_traindata <- add_region(tac1_nptx2a_high,c(0))
+
+#1
+pou4f1_pos_traindata <- add_region(pou4f1_pos_dHb,c(1))
+tacr3l_traindata<- add_region(tacr3l_dHb,c(1))
+tac1_nptx2a_low_traindata <- add_region(tac1_nptx2a_low,c(1))
+
+#2
+spx_inter_traindata<- add_region(spx_inter_dHb,c(2))
+galn_dIPN_traindata <- add_region(galn_dIPN_dHb,c(2))
+
+
+#3
+sst11_traindata <- add_region(sst11_dHb,c(3))
+nptx2a_vIPN_traindata <-add_region(nptx2a_dHb,c(3))
+
+
+#4
+neg_fam84b_sst11_traindata <- add_region(neg_fam84b_sst11_dHb,c(4))
+pou4f1_pos_traindata<- add_region(pou4f1_pos_dHb,c(4))
+spx_midvent_traindata<- add_region(spx_midvent_dHb,c(4))
+galn_vIPN_traindata <- add_region(galn_vIPN_dHb,c(4))
+
+#5
+fam84b_traindata <- add_region(fam84b_dHb,c(5))
+```
+
+
+
+
+
+```{r}
+
+overlap_IPN_traindata <- cbind(pou4f1_pos_traindata,neg_fam84b_sst11_traindata,pou4f1_neg_traindata,tac1_nptx2a_high_traindata,tac1_nptx2a_low_traindata,spx_inter_traindata,galn_dIPN_traindata,spx_midvent_traindata,galn_vIPN_traindata,nptx2a_vIPN_traindata,tacr3l_traindata,sst11_traindata,fam84b_traindata)
+
+rownames(overlap_IPN_traindata)<- append(rownames(dIPN_dHb@assays$RNA@data),"region") 
+
+
+sum(overlap_IPN_traindata[rownames(overlap_IPN_traindata) == "region"]==0)
+sum(overlap_IPN_traindata[rownames(overlap_IPN_traindata) == "region"]==1)
+sum(overlap_IPN_traindata[rownames(overlap_IPN_traindata) == "region"]==2)
+sum(overlap_IPN_traindata[rownames(overlap_IPN_traindata) == "region"]==3)
+sum(overlap_IPN_traindata[rownames(overlap_IPN_traindata) == "region"]==4)
+sum(overlap_IPN_traindata[rownames(overlap_IPN_traindata) == "region"]==5)
+
+```
+
+
+```{r}
+#remove some ambiguous cells to ensure the each cell possess unique identities in training data 
+overlap_IPN_traindata <- overlap_IPN_traindata[, !duplicated(colnames(overlap_IPN_traindata))]
+
+sum(overlap_IPN_traindata[rownames(overlap_IPN_traindata) == "region"]==0)
+sum(overlap_IPN_traindata[rownames(overlap_IPN_traindata) == "region"]==1)
+sum(overlap_IPN_traindata[rownames(overlap_IPN_traindata) == "region"]==2)
+sum(overlap_IPN_traindata[rownames(overlap_IPN_traindata) == "region"]==3)
+sum(overlap_IPN_traindata[rownames(overlap_IPN_traindata) == "region"]==4)
+sum(overlap_IPN_traindata[rownames(overlap_IPN_traindata) == "region"]==5)
+```
+
+
+
+```{r}
+library(caret)
+##resampling
+group_resample <- function(matrix,cat)
+{
+  options <- unique(matrix[rownames(matrix)==cat,])
+ 
+  temp <- c()
+  for (i in options)
+  { sub_matrix <- matrix[,matrix[rownames(matrix) == cat,] == i]
+   sample_min<- min(table(matrix[rownames(matrix)==cat,]))
+
+    new_mat<-sub_matrix[,sample(ncol(sub_matrix),sample_min)] 
+    temp<-cbind(temp,new_mat)
+  }
+  
+  temp
+  
+}
+
+
+```
+
+
+```{r}
+resampled_IPN_traindata <- group_resample(overlap_IPN_traindata,'region')
+resampled_IPN_traindata_n <- as.data.frame(t(resampled_IPN_traindata))
+
+```
+
+
+```{r}
+#diff_gene <- read.csv("./LH_vs_WB.genes.diff_fdr.txt",sep = '\t')
+
+
+```
+
+```{r}
+#library('biomaRt')
+#mart <- useDataset("drerio_gene_ensembl", useMart("ensembl"))
+
+```
+
+```{r}
+#diff_list <- getBM(filters= "ensembl_gene_id", attributes= #c("ensembl_gene_id","external_gene_name"),values=rownames(diff_gene),mart= mart)
+```
+
+```{r}
+library('stringr')
+```
+
+```{r}
+library(dplyr)
+library(tibble)
+#filtered_overlap_traindata <- resampled_traindata[rownames(resampled_traindata) %in% c(str_to_upper(diff_list$external_gene_name),'region'),]
+set.seed(111)
+
+#create ID column
+
+#filtered_IPN_traindata <- as.data.frame(resampled_IPN_traindata) %>% add_column(add_column = "id")
+filtered_IPN_traindata<- as.tibble(as.data.frame(resampled_IPN_traindata_n) %>% distinct() )
+#colnames(filtered_IPN_traindata)<- append(colnames(filtered_IPN_traindata),"id") 
+filtered_IPN_traindata$id <- 1:nrow(filtered_IPN_traindata)
+filtered_IPN_train<- filtered_IPN_traindata %>% dplyr::sample_frac(0.80)
+filtered_IPN_test<- dplyr::anti_join(filtered_IPN_traindata, filtered_IPN_train, by = 'id')
+
+```
+
+
+```{r}
+set.seed(111)
+
+xgb_IPN_overlap <- xgboost( data = scale(filtered_IPN_train %>% dplyr::select(-one_of(c("region","id"))) ,), 
+ label = filtered_IPN_train$region,
+ max_depth = 15, 
+ nround= 25, 
+ subsample = 0.5,
+ colsample_bytree = 1,
+ eval_metric = "mlogloss",
+ objective = "multi:softprob",
+ num_class = 6,
+ nthread = 8
+)
+```
+
+
+```{r}
+#hb_prediction <- predict(xgb_overlap,t(hb@assays$RNA@data[rownames(hb@assays$RNA@data) %in% str_to_upper(diff_list$external_gene_name),]),reshape = T)
+IPN_valid_prediction <- predict(xgb_IPN_overlap,scale(filtered_IPN_test %>% dplyr::select(-one_of(c("region","id"))) ,),reshape = T)
+
+```
+
+```{r}
+IPN_valid_predicted_labels= factor(max.col(IPN_valid_prediction),levels=1:6)
+summary(IPN_valid_predicted_labels)
+
+```
+
+```{r}
+#import required library 
+library(cvms)
+```
+
+
+
+
+```{r}
+conf_mat_IPN_valid <- confusion_matrix(targets = as.numeric(filtered_IPN_test$region)+1,
+                             predictions = IPN_valid_predicted_labels)
+plot_confusion_matrix(conf_mat_IPN_valid$`Confusion Matrix`[[1]],class_order = c("6","5","4","3","2","1"), add_counts = TRUE,
+  add_normalized = TRUE,
+  add_row_percentages = TRUE,
+  add_col_percentages = TRUE)
+```
+
+```{r}
+plot_confusion_matrix(conf_mat_IPN_valid$`Confusion Matrix`[[1]],class_order = c("6","5","4","3","2","1"), add_counts = FALSE,
+  add_normalized = FALSE,
+  add_row_percentages = FALSE,
+  add_col_percentages = FALSE)
+```
+
+
+
+```{r}
+p1 <- plot_confusion_matrix(conf_mat_IPN_valid$`Confusion Matrix`[[1]],class_order = c("6","5","4","3","2","1"))
+ggsave(
+  './out/zfish/conf_mat_IPN.png',
+  p1 ,
+  height = 6, width = 8
+)
+```
+
+
+```{r}
+###Assembly the matrix
+IPN_data <- as.data.frame(t(hb_lar1@assays$RNA@data))
+
+IPN_prediction <- predict(xgb_IPN_overlap,scale(IPN_data %>% dplyr::select(-one_of(c("region","id"))) ,),reshape = T)
+
+
+```
+
+```{r}
+IPN_predicted_labels <- factor(max.col(IPN_prediction),levels=1:6)
+summary(IPN_predicted_labels)
+
+```
+```{r}
+#hb@active.ident<- IPN_predicted_labels
+#dIPN_dHb@assays$RNA@counts@Dimnames[[2]]
+ident_IPN <- data.frame("cell" = hb_lar1@assays$RNA@counts@Dimnames[[2]],"label" =IPN_predicted_labels)
+
+```
+
+
+```{r}
+hb_predict_lar1<- hb_lar1
+```
+
+```{r}
+hb_predict_df <- data.frame("cell" = hb_predict_lar1@assays$RNA@counts@Dimnames[[2]],"label" =hb_predict_lar1@active.ident)
+
+
+#new_hb_ident  <- merge(hb_ident,rbind(ident_vIPN,ident_dIPN), by = "cell",no.dups= TRUE)
+#new_ident <- new_hb_ident[3]
+#summary(new_ident == "NA")
+new_id_factor <- factor(ident_IPN$label,levels = c(1,2,3,4,5,6))
+
+Idents(hb_predict_lar1)<-new_id_factor
+#attributes(hb_predict_lar1@active.ident)$name <- attributes(hb_lar1@active.ident)$name
+```
+
+
+```{r}
+UMAPPlot(hb_predict_lar1,cols = c("#ed5564","#ffce54","#808080","#a0d568","#4fc1e8","#ac92eb"))
+```
+
+
+```{r}
+df_out<- as.data.frame(hb_predict_lar1@active.ident,col.names = c("cells","idents"))
+write.csv(df_out, './predict_IPN_idents.csv', row.names=TRUE)
+```
+
+
+
+
+```{r}
+p1 <- UMAPPlot(hb_predict_lar1,cols = c("#ed5564","#ffce54","#808080","#a0d568","#4fc1e8","#ac92eb"))
+ggsave(
+  './out/zfish/dHb_predict_projection.png',
+  p1 ,
+  height = 6, width = 8
+)
+```
+
+
+
+```{r}
+p1<-FeaturePlot(object = hb_lar1_renamed, features = "ZGC:101731")
+ggsave(
+  './out/zfish/dHb_zgc101731.png',
+  p1 ,
+  height = 6, width = 8
+)
+##ZGC:195023
+```
+
+
+```{r}
+FeaturePlot(hb_lar1, feature = c("CRF"), min.cutoff = 50)
+##ZGC:195023
+
+```
+```{r}
+FeaturePlot(hb_predict_lar1, feature = c("KCTD12.2"), min.cutoff = 50)
+##ZGC:195023
+
+```
+```{r}
+temp_list<- colnames(hb_predict_lar1@assays$RNA@data)[hb_predict_lar1@assays$RNA@data[rownames(hb_predict_lar1@assays$RNA@data) == "SPX"] > 5]
+```
+
+
+```{r}
+summary(hb_predict_lar1@active.ident[temp_list])
+```
+
+```{r}
+hb_predict_scaled <- ScaleData(object = hb_predict_lar1, vars.to.regress = c("nCount_RNA", "percent.mito"),use.umi = FALSE,
+  do.scale = TRUE,
+  do.center = TRUE)
+```
+
+
+
+```{r}
+gene_list <- rownames(hb_lar1_renamed@assays$RNA@data)
+dotplot_genelist <- as.list(gene_list[grep("SLC17A",gene_list)])
+#dotplot_genelist<- as.list(grep("SLC17A",rownames(hb_predict_scaled@assays$RNA@data)))
+Seurat::DotPlot(object = hb_predict_lar1, assay = "RNA",scale = TRUE, idents = c("1","2","3","4","5","6","7","8","9","10","11","12","13"), features =c("GAD1A","GAD1B","GAD2"))
+```
+
+
+```{r}
+weighted_alpha <- function(data)
+  {
+  data.dt <- data.table(data)
+  cluster_sum <- data.dt[,list(n=sum(n)), by='cell_type']
+  cluster_name <- unique(data[1])
+  vector <- rep(as.numeric(0), dim(data)[1])
+  
+  for (m in 1:dim(cluster_name)[1])
+    {
+    bool<- as.numeric(data[1] == as.character(cluster_name$cell_type[m]))
+    vector <- as.numeric(vector) + as.numeric(cluster_sum[m]$n) * bool
+    }
+  vector
+}
+```
+
+
+
+```{r}
+library(dplyr)
+library(ggforce)
+library(data.table)
+require(scales)
+## get sample and cluster names
+#try(rm(data))
+#try(rm(data_labels))
+hb_predict_plot <- hb_predict_lar1
+hb_predict_plot <- AddMetaData(hb_predict_plot,hb_lar1_renamed@active.ident,col.name = "cell_type")
+hb_predict_plot <- AddMetaData(hb_predict_plot,hb_lar1_renamed@active.ident,col.name ="seurat_clusters")
+hb_predict_plot <- AddMetaData(hb_predict_plot,hb_predict_lar1@active.ident,col.name = "IPN_domain")
+levels(hb_predict_plot) <- c("1","2","3","4","5","6")
+cell_type <- hb_lar1_renamed@active.ident
+#hb_predict_plot <- hb_predict_lar1[,apply(IPN_prediction,1,max,na.rm=TRUE)>0.9]
+
+## create named vector holding the color assignments for both samples and
+## clusters
+
+custom_colors_cluster <-  hue_pal()(length(1:14))
+  #c("#E5E4E2","#B2BEB5","#D3D3D3","#C0C0C0","#A9A9A9","#71797E","#808080","#708090","#7393B3","#899499","#36454F","#848884","#818589")
+custom_colors_IPN <-c("#ed5564", "#ffce54","#808080","#a0d568","#4fc1e8","#ac92eb")
+
+# color_assignments <- setNames(
+#   c(custom_colors_cluster[1:length(samples)], custom_colors_IPN[1:length(clusters)]),
+#   c(samples,clusters)
+# )
+# 
+# ## prepare data for the plot; factor() calls are necessary for the right order
+# ## of columns (first samples then clusters) and boxes within each column (
+# ## cluster 1, 2, 3, ..., not 1, 10, 11, ...)
+# data <- hb_lar1_renamed@meta.data %>%
+#   group_by(cell_types,seurat_clusters) %>%
+#   tally() %>%
+#   ungroup() %>%
+#   gather_set_data(1:2) %>%
+#   dplyr::mutate(
+#     x = factor(x, levels = unique(x)),
+#     y = factor(y, levels = unique(y))
+#   )
+# 
+# data.frame(data)
+# # DataFrame with 114 rows and 6 columns
+# #       sample seurat_clusters         n        id               x        y
+# #     <factor>        <factor> <integer> <integer>        <factor> <factor>
+# # 1          A               0       301         1          sample        A
+# # 2          A               1       137         2          sample        A
+# # 3          A               2       121         3          sample        A
+# # 4          A               3       223         4          sample        A
+# # 5          A               4        78         5          sample        A
+# # ...      ...             ...       ...       ...             ...      ...
+# # 110        E              14        19        53 seurat_clusters       14
+# # 111        E              15        18        54 seurat_clusters       15
+# # 112        E              16        10        55 seurat_clusters       16
+# # 113        E              17         9        56 seurat_clusters       17
+# # 114        E              18        15        57 seurat_clusters       18
+# 
+# ## create sample and cluster labels; hjust defines whether a label will be
+# ## aligned to the right (1) or to the left (0); the nudge_x parameter is used
+# ## to move the label outside of the boxes
+# data_labels <- tibble(
+#     group = c(
+#       rep('sample', length(samples)),
+#       rep('seurat_clusters', length(clusters))
+#     )
+#  ) %>%
+#   mutate(
+#     hjust = ifelse(group == 'sample', 1, 0),
+#     nudge_x = ifelse(group == 'sample', -0.1, 0.1)
+#   )
+# 
+# data.frame(data_labels)
+# # DataFrame with 22 rows and 3 columns
+# #               group     hjust   nudge_x
+# #         <character> <numeric> <numeric>
+# # 1            sample         1      -0.1
+# # 2            sample         1      -0.1
+# # 3            sample         1      -0.1
+# # 4   seurat_clusters         0       0.1
+# # 5   seurat_clusters         0       0.1
+# # ...             ...       ...       ...
+# # 18  seurat_clusters         0       0.1
+# # 19  seurat_clusters         0       0.1
+# # 20  seurat_clusters         0       0.1
+# # 21  seurat_clusters         0       0.1
+# # 22  seurat_clusters         0       0.1
+# 
+# ## create plot
+# p1 <- ggplot(data, aes(x, id = id, split = y, value = n)) +
+#   geom_parallel_sets(aes(fill = seurat_clusters), alpha = 0.75, axis.width = 0.15) 
+#   geom_parallel_sets_axes(aes(fill = y), color = 'black', axis.width = 0.1) +
+#   geom_text(
+#     aes(y = n, split = y), stat = 'parallel_sets_axes', fontface = 'bold',
+#     hjust = data_labels$hjust, nudge_x = data_labels$nudge_x
+#   ) +
+#   scale_x_discrete(labels = c('Sample','Cluster')) +
+#   scale_fill_manual(values = color_assignments) +
+#   theme_bw() +
+#   theme(
+#     legend.position = 'none',
+#     axis.title = element_blank(),
+#     axis.text.x = element_text(face = 'bold', colour = 'black', size = 15),
+#     axis.text.y = element_blank(),
+#     axis.ticks = element_blank(),
+#     panel.grid.major = element_blank(),
+#     panel.grid.minor = element_blank(),
+#     panel.border = element_blank()
+#   )
+
+cell_type <- levels(hb_predict_plot@meta.data$cell_type)
+seurat_clusters <- levels(hb_predict_plot@meta.data$cell_type)
+IPN_domain <- levels(hb_predict_plot@active.ident)
+
+
+color_assignments <- setNames(
+  c(custom_colors_cluster[1:length(cell_type)], custom_colors_IPN[1:length(IPN_domain)]),
+  c(cell_type,IPN_domain)
+)
+
+
+
+data <- hb_predict_plot@meta.data %>%
+  #dplyr::rename(cell_type = cell_type_singler_blueprintencode_main) %>%
+  #dplyr::mutate(cell_type = factor(cell_type, levels = cell_type)) %>%
+  group_by(cell_type, IPN_domain) %>%
+  tally() %>%
+  ungroup() %>%
+  gather_set_data(1:2) %>%
+  dplyr::mutate(
+    x = factor(x, levels = unique(x)),
+    y = factor(y, levels =  c("Cluster 1" , "Cluster 2"  ,"Cluster 3",  "Cluster 4" , "Cluster 5" , "Cluster 6" ,"Cluster 7" , "Cluster 8" , "Cluster 9" , "Cluster 10" ,"Cluster 11","Cluster 12" ,"Cluster 13","Cluster 14", "1" , "2" , "3", "4","5" ,"6"))
+  )
+
+# 
+
+
+
+data_labels <- tibble(
+    group = c(
+      rep('seurat_clusters', length(cell_type)),
+      rep('IPN_domain', length(IPN_domain))
+    )
+ ) %>%
+  mutate(
+    hjust = ifelse(group == 'seurat_clusters', 1, 0),
+    nudge_x = ifelse(group == 'seurat_clusters', -0.1, 0.1)
+  )
+#apply(IPN_prediction,1,max,na.rm=TRUE) *0.75
+
+data_truncated <- data[data$n/weighted_alpha(data)*2 > 0.2,]
+
+p2<-  ggplot(data_truncated, aes(x, id = id, split = y, value = n)) +
+  geom_parallel_sets(aes(fill = cell_type), alpha = 0.5, axis.width = 0.1) +
+  geom_parallel_sets_axes(aes(fill = y), color = 'black', axis.width = 0.1) +
+  geom_text(
+    aes(y = n, split = y), stat = 'parallel_sets_axes', fontface = 'bold',
+    hjust = data_labels$hjust, nudge_x = data_labels$nudge_x
+  ) +
+  scale_x_discrete(labels = c('Cluster','IPN_Domain')) +
+  scale_fill_manual(values = color_assignments) +
+  theme_bw() +
+  theme(
+    legend.position = 'none',
+    axis.title = element_blank(),
+    axis.text.x = element_text(face = 'bold', colour = 'black', size = 15),
+    axis.text.y = element_blank(),
+    axis.ticks = element_blank(),
+    panel.grid.major = element_blank(),
+    panel.grid.minor = element_blank(),
+    panel.border = element_blank()
+  )
+```
+
+
+```{r}
+ ggplot(data_truncated, aes(x, id = id, split = y, value = n)) +
+  geom_parallel_sets(aes(fill = cell_type), alpha = 0.5, axis.width = 0.1) +
+  geom_parallel_sets_axes(aes(fill = y), color = 'black', axis.width = 0.1) +
+  geom_text(
+    aes(y = n, split = y), stat = 'parallel_sets_axes', fontface = 'bold',
+    hjust = data_labels$hjust, nudge_x = data_labels$nudge_x
+  ) +
+  scale_x_discrete(labels = c('Cluster','IPN_Domain')) +
+  scale_fill_manual(values = color_assignments) +
+  theme_bw() +
+  theme(
+    legend.position = 'none',
+    axis.title = element_blank(),
+    axis.text.x = element_text(face = 'bold', colour = 'black', size = 15),
+    axis.text.y = element_blank(),
+    axis.ticks = element_blank(),
+    panel.grid.major = element_blank(),
+    panel.grid.minor = element_blank(),
+    panel.border = element_blank()
+  )
+```
+
+```{r}
+ggsave('./out/zfish/samples_clusters_cell_types_alluvial.png',p2 ,height = 6, width = 8)
+
+
+```
+
+```{r}
+dotplot_genelist <- as.list(gene_list[grep("SLC17A",gene_list)])
+#dotplot_genelist<- as.list(grep("SLC17A",rownames(hb_predict_scaled@assays$RNA@data)))
+```
+
+
+```{r}
+library(tidyr)
+library(dplyr)
+library(ggplot2)
+
+#library(SingleR)
+# cells will be grouped by samples that they have been assigned to
+
+hb_predict_plot <- hb_predict_lar1
+temp_levels <- as.character(levels(hb_predict_plot))
+#levels(hb_predict_plot@active.ident) <- #as.character(c("1","2","3","4","5","6","7","8","9","10","11","12","13","14"))
+hb_predict_plot@meta.data$seurat_clusters <- hb_predict_plot@active.ident
+
+singler_results_blueprintencode_main <- temp_levels
+group_ids <- unique(levels(hb_predict_plot@active.ident))
+
+#genes_to_show <-toupper(c("slc5a7a","sox1b","gng2","g0s2","nr0b1","sst1.1","pnoca","pnocb","pou4f1","pou3f1","wnt7aa","tacr2","tacr3l","tac1","adcyap1a","zmat4a","cbln2b","pvalb7"))
+genes_to_show <-toupper(c("SLC17A6A","SLC17A6B","SLC17A7A","SLC17A7B","GAD1A","GAD1B","GAD2","SLC5A7A","SLC6A9","SLC38A5A","SLC38A5B"))
+
+# # select a set of genes for which we want to show expression
+#  genes_to_show <- hb_predict_plot@meta.data$seurat_clusters %>%
+#   group_by(seurat_clusters) %>%
+#   arrange(p_val_adj) %>%
+#   filter(row_number() == 1) %>%
+#   arrange(seurat_clusters) %>%
+#   pull(gene)
+
+# for every sample-gene combination, calculate the average expression across
+# all cells and then transform the data into a data frame
+temp_matrix<- hb_predict_plot[genes_to_show]
+temp_data<- as.data.frame(temp_matrix@assays$RNA@data)
+temp_norm <-temp_data/apply(temp_data,1,max)
+temp_mat<- temp_norm/rowSums(temp_norm)
+#temp_matrix@assays$RNA@scale.data <- temp_norm
+
+expression_levels_per_group <- vapply(
+    group_ids, FUN.VALUE = as.numeric(genes_to_show), function(x) {
+      cells_in_current_group <- which(temp_matrix@active.ident == x)
+      temp_data <- temp_mat[genes_to_show,cells_in_current_group]
+      rowSums(temp_data)
+    }
+  ) %>%
+  t() %>%
+  as.data.frame() %>%
+  mutate(seurat_clusters = rownames(.)) %>%
+  select(seurat_clusters, everything()) %>%
+  pivot_longer(
+    cols = c(2:ncol(.)),
+    names_to = 'gene'
+  ) %>%
+  dplyr::rename(expression = value) %>%
+  mutate(id_to_merge = paste0(seurat_clusters, '_', gene))
+expression_levels_per_group$expression<-scale(expression_levels_per_group$expression)
+# for every sample-gene combination, calculate the percentage of cells in the
+# respective group that has at least 1 transcript (this means we consider it
+# as expressing the gene) and then transform the data into a data frame
+percentage_of_cells_expressing_gene <- vapply(
+    group_ids, FUN.VALUE = numeric(length(genes_to_show)), function(x) {
+      cells_in_current_group <- which(hb_predict_plot@active.ident == x)
+      temp_data <-  temp_norm[genes_to_show,cells_in_current_group]
+      Matrix::rowSums(temp_data >0.1)
+    }
+  ) %>%
+  t() %>%
+  as.data.frame() %>%
+  mutate(seurat_clusters = rownames(.)) %>%
+  select(seurat_clusters, everything()) %>%
+  pivot_longer(
+    cols = c(2:ncol(.)),
+    names_to = 'gene'
+  ) %>%
+  dplyr::rename(cell_count = value) %>%
+  left_join(
+    .,
+    hb_predict_plot@meta.data %>%
+      group_by(seurat_clusters) %>%
+      tally(),
+    by = 'seurat_clusters') %>%
+  mutate(
+    id_to_merge = paste0(seurat_clusters, '_', gene),
+    percent_cells = cell_count / n
+  )
+
+# merge the two data frames created before and plot the data
+p <- left_join(
+    expression_levels_per_group,
+    percentage_of_cells_expressing_gene %>% select(id_to_merge, percent_cells),
+    by = 'id_to_merge'
+  ) %>%
+  mutate(
+    seurat_clusters = factor(seurat_clusters, levels = rev(group_ids)),
+    gene = factor(gene, levels = genes_to_show)
+  ) %>%
+  arrange(gene) %>%
+  ggplot(aes(gene, seurat_clusters)) +
+  geom_point(aes(color = expression, size = percent_cells)) +
+  scale_color_distiller(
+    palette = 'Reds',
+    direction = 1,
+    name = 'normalised\nexpression',
+    guide = guide_colorbar(frame.colour = "black", ticks.colour = "black")
+  ) +
+  scale_size(name = 'Percent\nof cells', labels = scales::percent) +
+  labs(y = 'Cell type', color = 'Expression') +
+  coord_fixed() +
+  theme_bw() +
+  theme(
+    axis.title = element_blank(),
+    axis.text.x = element_text(angle = 45, hjust = 1)
+  )
+
+ggsave('out/zfish_Hb_neurotransmitter_by_IPN.png', p, height =1800 , width = 2400,units = "px")
+```
+
+```{r}
+library(tidyr)
+library(dplyr)
+library(ggplot2)
+
+#library(SingleR)
+# cells will be grouped by samples that they have been assigned to
+
+hb_predict_plot <- hb_predict_lar1
+temp_levels <- as.character(levels(hb_predict_plot))
+#levels(hb_predict_plot@active.ident) <- #as.character(c("1","2","3","4","5","6","7","8","9","10","11","12","13","14"))
+hb_predict_plot@meta.data$seurat_clusters <- hb_predict_plot@active.ident
+
+singler_results_blueprintencode_main <- temp_levels
+group_ids <- unique(levels(hb_predict_plot@active.ident))
+
+#genes_to_show <-toupper(c("slc5a7a","sox1b","gng2","g0s2","nr0b1","sst1.1","pnoca","pnocb","pou4f1","pou3f1","wnt7aa","tacr2","tacr3l","tac1","adcyap1a","zmat4a","cbln2b","pvalb7"))
+genes_to_show <-toupper(c("SLC17A6A","SLC17A6B","SLC17A7A","SLC17A7B","GAD1A","GAD1B","GAD2","SLC5A7A","SLC6A9"))
+
+# # select a set of genes for which we want to show expression
+#  genes_to_show <- hb_predict_plot@meta.data$seurat_clusters %>%
+#   group_by(seurat_clusters) %>%
+#   arrange(p_val_adj) %>%
+#   filter(row_number() == 1) %>%
+#   arrange(seurat_clusters) %>%
+#   pull(gene)
+
+# for every sample-gene combination, calculate the average expression across
+# all cells and then transform the data into a data frame
+temp_matrix<- hb_predict_plot[genes_to_show]
+temp_data<- as.data.frame(temp_matrix@assays$RNA@data)
+temp_norm <-temp_data/apply(temp_data,1,max)
+temp_mat<- temp_norm/rowSums(temp_norm)
+#temp_matrix@assays$RNA@scale.data <- temp_norm
+
+expression_levels_per_group <- vapply(
+    group_ids, FUN.VALUE = as.numeric(genes_to_show), function(x) {
+      cells_in_current_group <- which(temp_matrix@active.ident == x)
+      temp_data <- temp_mat[genes_to_show,cells_in_current_group]
+      rowSums(temp_data)
+    }
+  ) %>%
+  t() %>%
+  as.data.frame() %>%
+  mutate(seurat_clusters = rownames(.)) %>%
+  select(seurat_clusters, everything()) %>%
+  pivot_longer(
+    cols = c(2:ncol(.)),
+    names_to = 'gene'
+  ) %>%
+  dplyr::rename(expression = value) %>%
+  mutate(id_to_merge = paste0(seurat_clusters, '_', gene))
+expression_levels_per_group$expression<-scale(expression_levels_per_group$expression)
+# for every sample-gene combination, calculate the percentage of cells in the
+# respective group that has at least 1 transcript (this means we consider it
+# as expressing the gene) and then transform the data into a data frame
+percentage_of_cells_expressing_gene <- vapply(
+    group_ids, FUN.VALUE = numeric(length(genes_to_show)), function(x) {
+      cells_in_current_group <- which(hb_predict_plot@active.ident == x)
+      temp_data <-  temp_norm[genes_to_show,cells_in_current_group]
+      Matrix::rowSums(temp_data >0.1)
+    }
+  ) %>%
+  t() %>%
+  as.data.frame() %>%
+  mutate(seurat_clusters = rownames(.)) %>%
+  select(seurat_clusters, everything()) %>%
+  pivot_longer(
+    cols = c(2:ncol(.)),
+    names_to = 'gene'
+  ) %>%
+  dplyr::rename(cell_count = value) %>%
+  left_join(
+    .,
+    hb_predict_plot@meta.data %>%
+      group_by(seurat_clusters) %>%
+      tally(),
+    by = 'seurat_clusters') %>%
+  mutate(
+    id_to_merge = paste0(seurat_clusters, '_', gene),
+    percent_cells = cell_count / n
+  )
+
+# merge the two data frames created before and plot the data
+p <- left_join(
+    expression_levels_per_group,
+    percentage_of_cells_expressing_gene %>% select(id_to_merge, percent_cells),
+    by = 'id_to_merge'
+  ) %>%
+  mutate(
+    seurat_clusters = factor(seurat_clusters, levels = rev(group_ids)),
+    gene = factor(gene, levels = genes_to_show)
+  ) %>%
+  arrange(gene) %>%
+  ggplot(aes(gene, seurat_clusters)) +
+  geom_point(aes(color = expression, size = percent_cells)) +
+  scale_color_distiller(
+    palette = 'Reds',
+    direction = 1,
+    name = 'normalised\nexpression',
+    guide = guide_colorbar(frame.colour = "black", ticks.colour = "black")
+  ) +
+  scale_size(name = 'Percent\nof cells', labels = scales::percent) +
+  labs(y = 'Cell type', color = 'Expression') +
+  coord_fixed() +
+  theme_bw() +
+  theme(
+    axis.title = element_blank(),
+    axis.text.x = element_text(angle = 45, hjust = 1)
+  )
+
+ggsave('out/zfish/zfish_Hb_neurotransmitter_by_IPN.png', p, height =1800 , width = 2400,units = "px")
+```
+
+
+
+```{r}
+library(tidyr)
+library(dplyr)
+library(ggplot2)
+
+#library(SingleR)
+# cells will be grouped by samples that they have been assigned to
+
+hb_predict_plot <- hb_predict_lar1
+temp_levels <- as.character(levels(hb_predict_plot))
+#levels(hb_predict_plot@active.ident) <- #as.character(c("1","2","3","4","5","6","7","8","9","10","11","12","13","14"))
+hb_predict_plot@meta.data$seurat_clusters <- hb_predict_plot@active.ident
+
+singler_results_blueprintencode_main <- temp_levels
+group_ids <- unique(levels(hb_predict_plot@active.ident))
+
+#genes_to_show <-toupper(c("slc5a7a","sox1b","gng2","g0s2","nr0b1","sst1.1","pnoca","pnocb","pou4f1","pou3f1","wnt7aa","tacr2","tacr3l","tac1","adcyap1a","zmat4a","cbln2b","pvalb7"))
+genes_to_show <-toupper(c("GALN","SPX","PNOCA","PNOCB","PDYN","SST1.1","TAC1","NPPC","ZGC:195023","TAC3A","TAC3B"))
+
+# # select a set of genes for which we want to show expression
+#  genes_to_show <- hb_predict_plot@meta.data$seurat_clusters %>%
+#   group_by(seurat_clusters) %>%
+#   arrange(p_val_adj) %>%
+#   filter(row_number() == 1) %>%
+#   arrange(seurat_clusters) %>%
+#   pull(gene)
+
+# for every sample-gene combination, calculate the average expression across
+# all cells and then transform the data into a data frame
+temp_matrix<- hb_predict_plot[genes_to_show]
+temp_data<- as.data.frame(temp_matrix@assays$RNA@data)
+temp_norm <-temp_data/apply(temp_data,1,max)
+temp_mat<- temp_norm/rowSums(temp_norm)
+#temp_matrix@assays$RNA@scale.data <- temp_norm
+
+expression_levels_per_group <- vapply(
+    group_ids, FUN.VALUE = as.numeric(genes_to_show), function(x) {
+      cells_in_current_group <- which(temp_matrix@active.ident == x)
+      temp_data <- temp_mat[genes_to_show,cells_in_current_group]
+      rowSums(temp_data)
+    }
+  ) %>%
+  t() %>%
+  as.data.frame() %>%
+  mutate(seurat_clusters = rownames(.)) %>%
+  select(seurat_clusters, everything()) %>%
+  pivot_longer(
+    cols = c(2:ncol(.)),
+    names_to = 'gene'
+  ) %>%
+  dplyr::rename(expression = value) %>%
+  mutate(id_to_merge = paste0(seurat_clusters, '_', gene))
+expression_levels_per_group$expression<-scale(expression_levels_per_group$expression)
+# for every sample-gene combination, calculate the percentage of cells in the
+# respective group that has at least 1 transcript (this means we consider it
+# as expressing the gene) and then transform the data into a data frame
+percentage_of_cells_expressing_gene <- vapply(
+    group_ids, FUN.VALUE = numeric(length(genes_to_show)), function(x) {
+      cells_in_current_group <- which(hb_predict_plot@active.ident == x)
+      temp_data <-  temp_norm[genes_to_show,cells_in_current_group]
+      Matrix::rowSums(temp_data >0.1)
+    }
+  ) %>%
+  t() %>%
+  as.data.frame() %>%
+  mutate(seurat_clusters = rownames(.)) %>%
+  select(seurat_clusters, everything()) %>%
+  pivot_longer(
+    cols = c(2:ncol(.)),
+    names_to = 'gene'
+  ) %>%
+  dplyr::rename(cell_count = value) %>%
+  left_join(
+    .,
+    hb_predict_plot@meta.data %>%
+      group_by(seurat_clusters) %>%
+      tally(),
+    by = 'seurat_clusters') %>%
+  mutate(
+    id_to_merge = paste0(seurat_clusters, '_', gene),
+    percent_cells = cell_count / n
+  )
+
+# merge the two data frames created before and plot the data
+p <- left_join(
+    expression_levels_per_group,
+    percentage_of_cells_expressing_gene %>% select(id_to_merge, percent_cells),
+    by = 'id_to_merge'
+  ) %>%
+  mutate(
+    seurat_clusters = factor(seurat_clusters, levels = rev(group_ids)),
+    gene = factor(gene, levels = genes_to_show)
+  ) %>%
+  arrange(gene) %>%
+  ggplot(aes(gene, seurat_clusters)) +
+  geom_point(aes(color = expression, size = percent_cells)) +
+  scale_color_distiller(
+    palette = 'Reds',
+    direction = 1,
+    name = 'normalised\nexpression',
+    guide = guide_colorbar(frame.colour = "black", ticks.colour = "black")
+  ) +
+  scale_size(name = 'Percent\nof cells', labels = scales::percent) +
+  labs(y = 'Cell type', color = 'Expression') +
+  coord_fixed() +
+  theme_bw() +
+  theme(
+    axis.title = element_blank(),
+    axis.text.x = element_text(angle = 45, hjust = 1)
+  )
+
+ggsave('out/zfish/zfish_Hb_neurotpeptides_by_IPN.png', p, height =1800 , width = 2400,units = "px")
+
+
+```
+
+
+```{r}
+library(tidyr)
+library(dplyr)
+library(ggplot2)
+
+#library(SingleR)
+# cells will be grouped by samples that they have been assigned to
+
+hb_predict_plot <- hb_predict_lar1
+temp_levels <- as.character(levels(hb_predict_plot))
+#levels(hb_predict_plot@active.ident) <- #as.character(c("1","2","3","4","5","6","7","8","9","10","11","12","13","14"))
+hb_predict_plot@meta.data$seurat_clusters <- hb_lar1_renamed@active.ident
+hb_predict_plot@active.ident <- hb_lar1_renamed@active.ident
+
+singler_results_blueprintencode_main <- temp_levels
+group_ids <- unique(levels(hb_predict_plot@active.ident))
+
+#genes_to_show <-toupper(c("slc5a7a","sox1b","gng2","g0s2","nr0b1","sst1.1","pnoca","pnocb","pou4f1","pou3f1","wnt7aa","tacr2","tacr3l","tac1","adcyap1a","zmat4a","cbln2b","pvalb7"))
+genes_to_show <-toupper(c("SLC17A6A","SLC17A6B","SLC17A7A","SLC17A7B","GAD1A","GAD1B","GAD2","SLC5A7A","SLC6A9","SLC38A5A","SLC38A5B"))
+
+# # select a set of genes for which we want to show expression
+#  genes_to_show <- hb_predict_plot@meta.data$seurat_clusters %>%
+#   group_by(seurat_clusters) %>%
+#   arrange(p_val_adj) %>%
+#   filter(row_number() == 1) %>%
+#   arrange(seurat_clusters) %>%
+#   pull(gene)
+
+# for every sample-gene combination, calculate the average expression across
+# all cells and then transform the data into a data frame
+temp_matrix<- hb_predict_plot[genes_to_show]
+temp_data<- as.data.frame(temp_matrix@assays$RNA@data)
+temp_norm <-temp_data/apply(temp_data,1,max)
+temp_mat<- temp_norm/rowSums(temp_norm)
+#temp_matrix@assays$RNA@scale.data <- temp_norm
+
+expression_levels_per_group <- vapply(
+    group_ids, FUN.VALUE = as.numeric(genes_to_show), function(x) {
+      cells_in_current_group <- which(temp_matrix@active.ident == x)
+      temp_data <- temp_mat[genes_to_show,cells_in_current_group]
+      rowSums(temp_data)
+    }
+  ) %>%
+  t() %>%
+  as.data.frame() %>%
+  mutate(seurat_clusters = rownames(.)) %>%
+  select(seurat_clusters, everything()) %>%
+  pivot_longer(
+    cols = c(2:ncol(.)),
+    names_to = 'gene'
+  ) %>%
+  dplyr::rename(expression = value) %>%
+  mutate(id_to_merge = paste0(seurat_clusters, '_', gene))
+expression_levels_per_group$expression<-scale(expression_levels_per_group$expression)
+# for every sample-gene combination, calculate the percentage of cells in the
+# respective group that has at least 1 transcript (this means we consider it
+# as expressing the gene) and then transform the data into a data frame
+percentage_of_cells_expressing_gene <- vapply(
+    group_ids, FUN.VALUE = numeric(length(genes_to_show)), function(x) {
+      cells_in_current_group <- which(hb_predict_plot@active.ident == x)
+      temp_data <-  temp_norm[genes_to_show,cells_in_current_group]
+      Matrix::rowSums(temp_data >0.1)
+    }
+  ) %>%
+  t() %>%
+  as.data.frame() %>%
+  mutate(seurat_clusters = rownames(.)) %>%
+  select(seurat_clusters, everything()) %>%
+  pivot_longer(
+    cols = c(2:ncol(.)),
+    names_to = 'gene'
+  ) %>%
+  dplyr::rename(cell_count = value) %>%
+  left_join(
+    .,
+    hb_predict_plot@meta.data %>%
+      group_by(seurat_clusters) %>%
+      tally(),
+    by = 'seurat_clusters') %>%
+  mutate(
+    id_to_merge = paste0(seurat_clusters, '_', gene),
+    percent_cells = cell_count / n
+  )
+
+# merge the two data frames created before and plot the data
+p <- left_join(
+    expression_levels_per_group,
+    percentage_of_cells_expressing_gene %>% select(id_to_merge, percent_cells),
+    by = 'id_to_merge'
+  ) %>%
+  mutate(
+    seurat_clusters = factor(seurat_clusters, levels = rev(group_ids)),
+    gene = factor(gene, levels = genes_to_show)
+  ) %>%
+  arrange(gene) %>%
+  ggplot(aes(gene, seurat_clusters)) +
+  geom_point(aes(color = expression, size = percent_cells)) +
+  scale_color_distiller(
+    palette = 'Reds',
+    direction = 1,
+    name = 'normalised\nexpression',
+    guide = guide_colorbar(frame.colour = "black", ticks.colour = "black")
+  ) +
+  scale_size(name = 'Percent\nof cells', labels = scales::percent) +
+  labs(y = 'Cell type', color = 'Expression') +
+  coord_fixed() +
+  theme_bw() +
+  theme(
+    axis.title = element_blank(),
+    axis.text.x = element_text(angle = 45, hjust = 1)
+  )
+
+ggsave('out/zfish/zfish_Hb_neurotransmitter_by_Hb.png', p, height =1800 , width = 2400,units = "px")
+```
+
+
+```{r}
+library(tidyr)
+library(dplyr)
+library(ggplot2)
+
+#library(SingleR)
+# cells will be grouped by samples that they have been assigned to
+
+hb_predict_plot <- hb_predict_lar1
+temp_levels <- as.character(levels(hb_predict_plot))
+#levels(hb_predict_plot@active.ident) <- #as.character(c("1","2","3","4","5","6","7","8","9","10","11","12","13","14"))
+hb_predict_plot@meta.data$seurat_clusters <- hb_lar1_renamed@active.ident
+hb_predict_plot@active.ident <- hb_lar1_renamed@active.ident
+
+singler_results_blueprintencode_main <- temp_levels
+group_ids <- unique(levels(hb_predict_plot@active.ident))
+
+#genes_to_show <-toupper(c("slc5a7a","sox1b","gng2","g0s2","nr0b1","sst1.1","pnoca","pnocb","pou4f1","pou3f1","wnt7aa","tacr2","tacr3l","tac1","adcyap1a","zmat4a","cbln2b","pvalb7"))
+genes_to_show <-toupper(c("GALN","SPX","PNOCA","PNOCB","PDYN","SST1.1","TAC1"))
+
+# # select a set of genes for which we want to show expression
+#  genes_to_show <- hb_predict_plot@meta.data$seurat_clusters %>%
+#   group_by(seurat_clusters) %>%
+#   arrange(p_val_adj) %>%
+#   filter(row_number() == 1) %>%
+#   arrange(seurat_clusters) %>%
+#   pull(gene)
+
+# for every sample-gene combination, calculate the average expression across
+# all cells and then transform the data into a data frame
+temp_matrix<- hb_predict_plot[genes_to_show]
+temp_data<- as.data.frame(temp_matrix@assays$RNA@data)
+temp_norm <-temp_data/apply(temp_data,1,max)
+temp_mat<- temp_norm/rowSums(temp_norm)
+#temp_matrix@assays$RNA@scale.data <- temp_norm
+
+expression_levels_per_group <- vapply(
+    group_ids, FUN.VALUE = as.numeric(genes_to_show), function(x) {
+      cells_in_current_group <- which(temp_matrix@active.ident == x)
+      temp_data <- temp_mat[genes_to_show,cells_in_current_group]
+      rowSums(temp_data)
+    }
+  ) %>%
+  t() %>%
+  as.data.frame() %>%
+  mutate(seurat_clusters = rownames(.)) %>%
+  select(seurat_clusters, everything()) %>%
+  pivot_longer(
+    cols = c(2:ncol(.)),
+    names_to = 'gene'
+  ) %>%
+  dplyr::rename(expression = value) %>%
+  mutate(id_to_merge = paste0(seurat_clusters, '_', gene))
+expression_levels_per_group$expression<-scale(expression_levels_per_group$expression)
+# for every sample-gene combination, calculate the percentage of cells in the
+# respective group that has at least 1 transcript (this means we consider it
+# as expressing the gene) and then transform the data into a data frame
+percentage_of_cells_expressing_gene <- vapply(
+    group_ids, FUN.VALUE = numeric(length(genes_to_show)), function(x) {
+      cells_in_current_group <- which(hb_predict_plot@active.ident == x)
+      temp_data <-  temp_norm[genes_to_show,cells_in_current_group]
+      Matrix::rowSums(temp_data >0.1)
+    }
+  ) %>%
+  t() %>%
+  as.data.frame() %>%
+  mutate(seurat_clusters = rownames(.)) %>%
+  select(seurat_clusters, everything()) %>%
+  pivot_longer(
+    cols = c(2:ncol(.)),
+    names_to = 'gene'
+  ) %>%
+  dplyr::rename(cell_count = value) %>%
+  left_join(
+    .,
+    hb_predict_plot@meta.data %>%
+      group_by(seurat_clusters) %>%
+      tally(),
+    by = 'seurat_clusters') %>%
+  mutate(
+    id_to_merge = paste0(seurat_clusters, '_', gene),
+    percent_cells = cell_count / n
+  )
+
+# merge the two data frames created before and plot the data
+p <- left_join(
+    expression_levels_per_group,
+    percentage_of_cells_expressing_gene %>% select(id_to_merge, percent_cells),
+    by = 'id_to_merge'
+  ) %>%
+  mutate(
+    seurat_clusters = factor(seurat_clusters, levels = rev(group_ids)),
+    gene = factor(gene, levels = genes_to_show)
+  ) %>%
+  arrange(gene) %>%
+  ggplot(aes(gene, seurat_clusters)) +
+  geom_point(aes(color = expression, size = percent_cells)) +
+  scale_color_distiller(
+    palette = 'Reds',
+    direction = 1,
+    name = 'normalised\nexpression',
+    guide = guide_colorbar(frame.colour = "black", ticks.colour = "black")
+  ) +
+  scale_size(name = 'Percent\nof cells', labels = scales::percent) +
+  labs(y = 'Cell type', color = 'Expression') +
+  coord_fixed() +
+  theme_bw() +
+  theme(
+    axis.title = element_blank(),
+    axis.text.x = element_text(angle = 45, hjust = 1)
+  )
+
+ggsave('out/zfish/zfish_Hb_neurotpeptides_by_Hb.png', p, height =1800 , width = 2400,units = "px")
+
+
+```
+
+
+```{r}
+library(tidyr)
+library(dplyr)
+library(ggplot2)
+# # select a set of genes for which we want to show expression
+#  genes_to_show <- hb_predict_plot@meta.data$seurat_clusters %>%
+#   group_by(seurat_clusters) %>%
+#   arrange(p_val_adj) %>%
+#   filter(row_number() == 1) %>%
+#   arrange(seurat_clusters) %>%
+#   pull(gene)
+
+# for every sample-gene combination, calculate the average expression across
+# all cells and then transform the data into a data frame
+temp_matrix<- hb_predict_plot[genes_to_show]
+temp_data<- as.data.frame(temp_matrix@assays$RNA@data)
+temp_norm <-temp_data/apply(temp_data,1,max)
+temp_mat<- temp_norm/rowSums(temp_norm)
+#temp_matrix@assays$RNA@scale.data <- temp_norm
+
+expression_levels_per_group <- vapply(
+    group_ids, FUN.VALUE = as.numeric(genes_to_show), function(x) {
+      cells_in_current_group <- which(temp_matrix@active.ident == x)
+      temp_data <- temp_mat[genes_to_show,cells_in_current_group]
+      rowSums(temp_data)
+    }
+  ) %>%
+  t() %>%
+  as.data.frame() %>%
+  mutate(seurat_clusters = rownames(.)) %>%
+  select(seurat_clusters, everything()) %>%
+  pivot_longer(
+    cols = c(2:ncol(.)),
+    names_to = 'gene'
+  ) %>%
+  dplyr::rename(expression = value) %>%
+  mutate(id_to_merge = paste0(seurat_clusters, '_', gene))
+expression_levels_per_group$expression<-scale(expression_levels_per_group$expression)
+# for every sample-gene combination, calculate the percentage of cells in the
+# respective group that has at least 1 transcript (this means we consider it
+# as expressing the gene) and then transform the data into a data frame
+percentage_of_cells_expressing_gene <- vapply(
+    group_ids, FUN.VALUE = numeric(length(genes_to_show)), function(x) {
+      cells_in_current_group <- which(hb_predict_plot@active.ident == x)
+      temp_data <-  temp_norm[genes_to_show,cells_in_current_group]
+      Matrix::rowSums(temp_data >0.1)
+    }
+  ) %>%
+  t() %>%
+  as.data.frame() %>%
+  mutate(seurat_clusters = rownames(.)) %>%
+  select(seurat_clusters, everything()) %>%
+  pivot_longer(
+    cols = c(2:ncol(.)),
+    names_to = 'gene'
+  ) %>%
+  dplyr::rename(cell_count = value) %>%
+  left_join(
+    .,
+    hb_predict_plot@meta.data %>%
+      group_by(seurat_clusters) %>%
+      tally(),
+    by = 'seurat_clusters') %>%
+  mutate(
+    id_to_merge = paste0(seurat_clusters, '_', gene),
+    percent_cells = cell_count / n
+  )
+
+# merge the two data frames created before and plot the data
+p <- left_join(
+    expression_levels_per_group,
+    percentage_of_cells_expressing_gene %>% select(id_to_merge, percent_cells),
+    by = 'id_to_merge'
+  ) %>%
+  mutate(
+    seurat_clusters = factor(seurat_clusters, levels = rev(group_ids)),
+    gene = factor(gene, levels = genes_to_show)
+  ) %>%
+  arrange(gene) %>%
+  ggplot(aes(gene, seurat_clusters)) +
+  geom_point(aes(color = expression, size = percent_cells)) +
+  scale_color_distiller(
+    palette = 'Reds',
+    direction = 1,
+    name = 'normalised\nexpression',
+    guide = guide_colorbar(frame.colour = "black", ticks.colour = "black")
+  ) +
+  scale_size(name = 'Percent\nof cells', labels = scales::percent) +
+  labs(y = 'Cell type', color = 'Expression') +
+  coord_fixed() +
+  theme_bw() +
+  theme(
+    axis.title = element_blank(),
+    axis.text.x = element_text(angle = 45, hjust = 1)
+  )
+
+ggsave('out/zfish/zfish_Hb markers_Hb.png', p, height =1800 , width = 2400,units = "px")
+
+
+```
+
+
+```{r}
+#library(sceasy)
+library(SeuratData)
+library(SeuratDisk)
+library(reticulate)
+library(SingleCellExperiment)
+use_condaenv('r')
+loompy <- reticulate::import('loompy')
+```
+
+```{r}
+# Output the integrated fish dataset as h5Seurat for SAMap
+#LayerData(hb_mm,assay="integrated",layer="data")
+#LayerData(hb_lar1,assay="RNA",layer="data")
+#sceasy::convertFormat(hb_mm, from="seurat", to="anndata",main_layer = "counts",
+#                      outFile='mHb_scRNA.h5ad')
+hb_lar1.v3assay <- CreateAssayObject(hb_lar1@assays$RNA$data,assay = "RNA", min.cells = 3, project = "dr")
+hb_lar1.v3 <- CreateSeuratObject(hb_lar1.v3assay)                      
+hb_lar1.v3@meta.data$clusters <- hb_lar1_renamed@active.ident
+hb_lar1.v3@meta.data$cells <- colnames(hb_lar1@assays$RNA$data)
+try(SaveH5Seurat(hb_lar1.v3, filename = "hb_lar1.h5Seurat",overwrite = TRUE))
+Convert("./hb_lar1.h5Seurat", dest = "h5ad",overwrite = TRUE)
+```
+```{r}
+#summarize(as.list(hb_lar1.v3@meta.data$clusters))
+```
+
+
