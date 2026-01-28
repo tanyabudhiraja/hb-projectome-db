@@ -256,7 +256,7 @@ function showIPNResult(ipnNum) {
     } else {
         html += `<p><strong>Clusters (${matches.length}):</strong></p><div class="item-list">`;
         matches.forEach(c => {
-            html += `<div class="list-item" onclick="viewClusterOnUMAP('${c.cluster}')"><span><strong>${c.cluster}</strong></span><span>${parseFloat(c.percent).toFixed(1)}% · ${c.total_cells} cells</span></div>`;
+            html += `<div class="list-item" onclick="viewClusterOnUMAP('${c.cluster}')"><span><strong>${c.cluster}</strong></span><span>${parseFloat(c.percent).toFixed(1)}% - ${c.total_cells} cells</span></div>`;
         });
         html += '</div>';
     }
@@ -311,7 +311,7 @@ function showIPNGeneResult(ipnNum) {
         const total = geneData.filter(r => parseInt(r.dominant_IPN) === parseInt(ipnNum)).length;
         html += `<p><strong>Top genes (${matches.length} of ${total}):</strong></p><div class="item-list">`;
         matches.forEach(g => {
-            html += `<div class="list-item" onclick="viewGeneOnUMAP('${g.gene}')"><span><strong>${g.gene}</strong></span><span>${parseFloat(g.percent).toFixed(1)}% · ${g.total_expressing} cells</span></div>`;
+            html += `<div class="list-item" onclick="viewGeneOnUMAP('${g.gene}')"><span><strong>${g.gene}</strong></span><span>${parseFloat(g.percent).toFixed(1)}% - ${g.total_expressing} cells</span></div>`;
         });
         html += '</div>';
     }
