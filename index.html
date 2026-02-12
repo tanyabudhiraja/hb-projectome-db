@@ -127,7 +127,7 @@
             padding: 12px; 
             font-size: 16px; 
             width: 100%; 
-            max-width: 400px;
+            max-width: 600px;
             margin: 10px 0;
             border: 1px solid var(--dartmouth-green);
             border-radius: 4px;
@@ -324,6 +324,46 @@
         
         .pagination button:hover:not(:disabled) { background: var(--cream); }
         .pagination button:disabled { opacity: 0.5; cursor: not-allowed; }
+        
+        /* Autocomplete Dropdown Styles */
+        .autocomplete-items {
+            position: absolute;
+            border: 1px solid #d4d4d4;
+            border-bottom: none;
+            border-top: none;
+            z-index: 99;
+            top: 100%;
+            left: 0;
+            right: 0;
+            background-color: white;
+            max-height: 300px;
+            overflow-y: auto;
+            box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
+        }
+
+        .autocomplete-items div {
+            padding: 12px;
+            cursor: pointer;
+            background-color: #fff;
+            border-bottom: 1px solid #d4d4d4;
+            font-size: 16px;
+        }
+
+        .autocomplete-items div:hover {
+            background-color: #e9e9e9;
+        }
+
+        .autocomplete-active {
+            background-color: #2e7d32 !important;
+            color: #ffffff;
+        }
+
+        .autocomplete {
+            position: relative;
+            display: block;
+            width: 100%;
+            max-width: 600px;
+        }
     </style>
 </head>
 <body>
@@ -425,8 +465,9 @@
             <p>Search for a gene to see which IPN domains express it.</p>
             
             <label>Search gene:</label><br>
-            <input type="text" id="geneSearchInput" placeholder="Type gene name (e.g., SLC5A7A, PNOCA)..." list="geneDatalist">
-            <datalist id="geneDatalist"></datalist>
+            <div class="autocomplete">
+                <input type="text" id="geneSearchInput" placeholder="Type gene name (e.g., SLC5A7A, PNOCA)...">
+            </div>
             
             <div id="geneResult" class="result-box"></div>
             <button class="btn" onclick="downloadCSV('gene_dominant_IPN.csv')">Download CSV</button>
@@ -464,12 +505,11 @@
             
             <div class="umap-container">
                 <div class="umap-controls">
-                    <div>
+                    <div class="autocomplete" style="display: inline-block; width: 300px;">
                         <label>Enter gene name:</label><br>
-                        <input type="text" id="umapGeneInput" placeholder="Type gene name and press Enter..." list="umapGeneDatalist" style="width: 300px;">
-                        <datalist id="umapGeneDatalist"></datalist>
+                        <input type="text" id="umapGeneInput" placeholder="Type gene name and press Enter..." style="width: 100%;">
                     </div>
-                    <div>
+                    <div style="display: inline-block; margin-left: 20px; vertical-align: bottom;">
                         <button class="btn" onclick="downloadPlot()">Download Plot</button>
                     </div>
                 </div>

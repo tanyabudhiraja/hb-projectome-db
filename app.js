@@ -116,7 +116,17 @@ document.addEventListener('DOMContentLoaded', async function() {
         .then(csv => {
             const parsed = Papa.parse(csv, {header: true, skipEmptyLines: true}).data;
             geneList = parsed.map(r => r.gene).filter(g => g);
-            populateUmapGeneDatalist();
+            
+            // Initialize custom autocomplete for gene search inputs
+            const geneSearchInput = document.getElementById('geneSearchInput');
+            const umapGeneInput = document.getElementById('umapGeneInput');
+            
+            if (geneSearchInput) {
+                createAutocompleteDropdown(geneSearchInput, geneList);
+            }
+            if (umapGeneInput) {
+                createAutocompleteDropdown(umapGeneInput, geneList);
+            }
         })
         .catch(e => console.log('gene_list.csv not found'));
 });
@@ -140,13 +150,142 @@ function populateClusterDropdown() {
     });
 }
 
-function populateUmapGeneDatalist() {
-    const datalist = document.getElementById('umapGeneDatalist');
-    // Load ALL genes, not just first 500
-    geneList.forEach(g => {
-        const opt = document.createElement('option');
-        opt.value = g;
-        datalist.appendChild(opt);
+// Custom autocomplete dropdown functionality
+function createAutocompleteDropdown(inputElement, suggestions) {
+    let currentFocus = -1;
+    let autocompleteList;
+
+    // Close any already open dropdown
+    function closeAllLists(element) {
+        const items = document.getElementsByClassName('autocomplete-items');
+        for (let i = 0; i < items.length; i++) {
+            if (element !== items[i] && element !== inputElement) {
+                items[i].parentNode.removeChild(items[i]);
+            }
+        }
+    }
+
+    // Show dropdown with matches
+    function showMatches(val) {
+        closeAllLists();
+        currentFocus = -1;
+        
+        if (!val || val.length < 1) return false;
+        
+        // Create dropdown container
+        autocompleteList = document.createElement('div');
+        autocompleteList.setAttribute('id', inputElement.id + 'autocomplete-list');
+        autocompleteList.setAttribute('class', 'autocomplete-items');
+        inputElement.parentNode.appendChild(autocompleteList);
+        
+        // Find matching genes (substring match, case-insensitive)
+        const matches = suggestions.filter(gene => 
+            gene.toUpperCase().includes(val.toUpperCase())
+        ).slice(0, 15); // Limit to 15 suggestions
+        
+        if (matches.length === 0) {
+            const noMatch = document.createElement('div');
+            noMatch.innerHTML = '<em>No matching genes found</em>';
+            noMatch.style.fontStyle = 'italic';
+            noMatch.style.color = '#666';
+            autocompleteList.appendChild(noMatch);
+            return;
+        }
+        
+        // Create dropdown items
+        matches.forEach(gene => {
+            const item = document.createElement('div');
+            const index = gene.toUpperCase().indexOf(val.toUpperCase());
+            
+            // Highlight matching part
+            item.innerHTML = gene.substr(0, index);
+            item.innerHTML += '<strong>' + gene.substr(index, val.length) + '</strong>';
+            item.innerHTML += gene.substr(index + val.length);
+            
+            // Store the full gene name
+            item.innerHTML += '<input type="hidden" value="' + gene + '">';
+            
+            // Click handler
+            item.addEventListener('click', function(e) {
+                inputElement.value = this.getElementsByTagName('input')[0].value;
+                closeAllLists();
+                // Trigger the gene search
+                if (inputElement.id === 'geneSearchInput') {
+                    showGeneResult(inputElement.value);
+                } else if (inputElement.id === 'umapGeneInput') {
+                    // Trigger UMAP load
+                    const geneName = inputElement.value.trim();
+                    if (geneName) {
+                        document.getElementById('umapPlot').innerHTML = '<div class="loading">Loading gene expression...</div>';
+                        loadGeneExpression(geneName).then(expr => {
+                            if (expr) {
+                                renderUMAP('gene', expr);
+                            } else {
+                                document.getElementById('umapPlot').innerHTML = '<div class="loading">Gene not found</div>';
+                            }
+                        });
+                    }
+                }
+            });
+            
+            autocompleteList.appendChild(item);
+        });
+    }
+
+    // Handle input event - show dropdown immediately
+    inputElement.addEventListener('input', function(e) {
+        showMatches(this.value);
+    });
+
+    // Keyboard navigation
+    inputElement.addEventListener('keydown', function(e) {
+        let items = document.getElementById(this.id + 'autocomplete-list');
+        if (items) items = items.getElementsByTagName('div');
+        
+        if (e.keyCode === 40) { // Down arrow
+            e.preventDefault();
+            currentFocus++;
+            addActive(items);
+        } else if (e.keyCode === 38) { // Up arrow
+            e.preventDefault();
+            currentFocus--;
+            addActive(items);
+        } else if (e.keyCode === 13) { // Enter
+            if (currentFocus > -1 && items && items[currentFocus]) {
+                e.preventDefault();
+                items[currentFocus].click();
+            }
+        } else if (e.keyCode === 27) { // Escape
+            closeAllLists();
+        }
+    });
+
+    function addActive(items) {
+        if (!items) return false;
+        removeActive(items);
+        if (currentFocus >= items.length) currentFocus = 0;
+        if (currentFocus < 0) currentFocus = items.length - 1;
+        if (items[currentFocus]) {
+            items[currentFocus].classList.add('autocomplete-active');
+        }
+    }
+
+    function removeActive(items) {
+        for (let i = 0; i < items.length; i++) {
+            items[i].classList.remove('autocomplete-active');
+        }
+    }
+
+    // Close dropdown when clicking outside
+    document.addEventListener('click', function(e) {
+        closeAllLists(e.target);
+    });
+    
+    // Show dropdown on focus if there's already text
+    inputElement.addEventListener('focus', function() {
+        if (this.value.length >= 1) {
+            showMatches(this.value);
+        }
     });
 }
 
