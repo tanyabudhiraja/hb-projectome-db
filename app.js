@@ -140,10 +140,10 @@ function populateClusterDropdown() {
     });
 }
 
-function populateGeneDatalist() {
-    const datalist = document.getElementById('geneDatalist');
-    const genes = [...new Set(geneData.map(r => r.gene))].sort();
-    genes.slice(0, 500).forEach(g => {
+function populateUmapGeneDatalist() {
+    const datalist = document.getElementById('umapGeneDatalist');
+    // Load ALL genes, not just first 500
+    geneList.forEach(g => {
         const opt = document.createElement('option');
         opt.value = g;
         datalist.appendChild(opt);
@@ -522,47 +522,49 @@ function downloadPlot() {
 }
 
 // ============================================================
-// Event Listeners
+// Event Listeners  
 // ============================================================
-document.getElementById('clusterSelect').addEventListener('change', function() {
-    showClusterResult(this.value);
-});
+document.addEventListener('DOMContentLoaded', function() {
+    document.getElementById('clusterSelect').addEventListener('change', function() {
+        showClusterResult(this.value);
+    });
 
-document.getElementById('ipnSelect').addEventListener('change', function() {
-    showIPNResult(this.value);
-});
+    document.getElementById('ipnSelect').addEventListener('change', function() {
+        showIPNResult(this.value);
+    });
 
-document.getElementById('geneSearchInput').addEventListener('input', function() {
-    clearTimeout(this.timeout);
-    this.timeout = setTimeout(() => {
-        if (this.value.length >= 2) showGeneResult(this.value);
-    }, 300);
-});
+    document.getElementById('geneSearchInput').addEventListener('input', function() {
+        clearTimeout(this.timeout);
+        this.timeout = setTimeout(() => {
+            if (this.value.length >= 2) showGeneResult(this.value);
+        }, 300);
+    });
 
-document.getElementById('ipnGeneSelect').addEventListener('change', function() {
-    showIPNGeneResult(this.value);
-});
+    document.getElementById('ipnGeneSelect').addEventListener('change', function() {
+        showIPNGeneResult(this.value);
+    });
 
-document.getElementById('geneTableFilter').addEventListener('input', function() {
-    const filter = this.value.toLowerCase();
-    filteredGeneData = filter ? geneData.filter(r => r.gene.toLowerCase().includes(filter)) : [...geneData];
-    geneTablePage = 1;
-    populateGeneTable();
-});
+    document.getElementById('geneTableFilter').addEventListener('input', function() {
+        const filter = this.value.toLowerCase();
+        filteredGeneData = filter ? geneData.filter(r => r.gene.toLowerCase().includes(filter)) : [...geneData];
+        geneTablePage = 1;
+        populateGeneTable();
+    });
 
-document.getElementById('umapGeneInput').addEventListener('keydown', function(e) {
-    if (e.key === 'Enter') {
-        e.preventDefault();
-        const geneName = this.value.trim();
-        if (geneName) {
-            document.getElementById('umapPlot').innerHTML = '<div class="loading">Loading gene expression...</div>';
-            loadGeneExpression(geneName).then(expr => {
-                if (expr) {
-                    renderUMAP('gene', expr);
-                } else {
-                    document.getElementById('umapPlot').innerHTML = '<div class="loading">Gene expression data not found. Check gene name or run generate_web_data.R</div>';
-                }
-            });
+    document.getElementById('umapGeneInput').addEventListener('keydown', function(e) {
+        if (e.key === 'Enter') {
+            e.preventDefault();
+            const geneName = this.value.trim();
+            if (geneName) {
+                document.getElementById('umapPlot').innerHTML = '<div class="loading">Loading gene expression...</div>';
+                loadGeneExpression(geneName).then(expr => {
+                    if (expr) {
+                        renderUMAP('gene', expr);
+                    } else {
+                        document.getElementById('umapPlot').innerHTML = '<div class="loading">Gene expression data not found. Check gene name or run generate_web_data.R</div>';
+                    }
+                });
+            }
         }
-    }
+    });
 });
