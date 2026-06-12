@@ -540,12 +540,40 @@ function createDistributionBar(dist) {
 // ============================================================
 // UMAP Visualization
 // ============================================================
-function renderUMAP(colorBy = 'cluster', geneExpr = null) {
+function renderUMAP(colorBy = 'cluster', geneExpr = null, highlightItem = null) {
     if (umapData.length === 0) return;
     
     let traces = [];
     
-    if (colorBy === 'cluster') {
+    if (colorBy === 'highlight-cluster' && highlightItem) {
+        // Highlight specific cluster, gray out others
+        const clusters = [...new Set(umapData.map(d => d.cluster))].sort((a, b) => {
+            const numA = parseInt(a.match(/\d+/)?.[0] || 0);
+            const numB = parseInt(b.match(/\d+/)?.[0] || 0);
+            return numA - numB;
+        });
+        
+        const highlightIndex = clusters.indexOf(highlightItem);
+        
+        clusters.forEach((cluster, i) => {
+            const cells = umapData.filter(d => d.cluster === cluster);
+            const isHighlighted = cluster === highlightItem;
+            traces.push({
+                x: cells.map(d => parseFloat(d.UMAP_1)),
+                y: cells.map(d => parseFloat(d.UMAP_2)),
+                mode: 'markers',
+                type: 'scattergl',
+                name: cluster,
+                marker: {
+                    size: isHighlighted ? 6 : 3,
+                    color: isHighlighted ? clusterColors[highlightIndex % clusterColors.length] : '#d3d3d3',
+                    opacity: isHighlighted ? 0.9 : 0.3
+                },
+                text: cells.map(d => `${d.cluster}<br>IPN: ${ipnDomainInfo[d.IPN_domain]?.code || d.IPN_domain}`),
+                hoverinfo: 'text'
+            });
+        });
+    } else if (colorBy === 'cluster') {
         // Group by cluster
         const clusters = [...new Set(umapData.map(d => d.cluster))].sort((a, b) => {
             const numA = parseInt(a.match(/\d+/)?.[0] || 0);
@@ -633,7 +661,8 @@ function renderUMAP(colorBy = 'cluster', geneExpr = null) {
     }
     
     const layout = {
-        title: colorBy === 'gene' ? `Gene Expression: ${document.getElementById('umapGeneInput').value}` : '',
+        title: colorBy === 'gene' ? `Gene Expression: ${document.getElementById('umapGeneInput').value}` : 
+               colorBy === 'highlight-cluster' ? `Highlighted: ${highlightItem}` : '',
         xaxis: { title: 'UMAP_1', zeroline: false },
         yaxis: { title: 'UMAP_2', zeroline: false },
         hovermode: 'closest',
@@ -683,7 +712,7 @@ function viewClusterOnUMAP(clusterName) {
     document.querySelectorAll('.tab-content').forEach(t => t.classList.remove('active'));
     document.getElementById('umap-viz').classList.add('active');
     
-    renderUMAP('cluster');
+    renderUMAP('highlight-cluster', null, clusterName);
 }
 
 // ============================================================
